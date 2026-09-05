@@ -1,19 +1,19 @@
 const express = require("express");
-
+const cors = require("cors");
+const pool = require("./db");
 const app = express();
 
 const PORT = 3000;
-
+app.use(cors());
 app.use(express.json());
 
-let jobs = [];
-let nextId = 1;
 const allowedStatuses = [
     "Applied",
     "Interview",
     "Rejected",
     "Offer",
-    "Accepted"
+    "Accepted",
+    "Selected"
 ];
 
 // Home route
@@ -22,7 +22,7 @@ app.get("/", (req, res) => {
 });
 
 // Add a new job
-app.post("/api/jobs", (req, res) => {
+app.post("/api/jobs", async (req, res) => {
     const { company, role, status } = req.body;
 
     if (!company || !role || !status) {
@@ -31,85 +31,171 @@ app.post("/api/jobs", (req, res) => {
         });
     }
 
-    const newJob = {
-        id: nextId++,
-        company,
-        role,
-        status
-    };
-
-    jobs.push(newJob);
-
-    res.status(201).json(newJob);
-});
-
-// Get all jobs
-app.get("/api/jobs", (req, res) => {
-    res.json(jobs);
-});
-
-// Get a single job by ID
-app.get("/api/jobs/:id", (req, res) => {
-    const id = parseInt(req.params.id);
-
-    const job = jobs.find(job => job.id === id);
-
-    if (!job) {
-        return res.status(404).json({
-            message: "Job not found"
-        });
-    }
-
-    res.json(job);
-});
-
-app.put("/api/jobs/:id", (req, res) => {
-    const id = Number(req.params.id);
-
-    const job = jobs.find((job) => job.id === id);
-
-    if (!job) {
-        return res.status(404).json({ message: "Job not found" });
-    }
-
-    job.status = req.body.status;
-
-    res.json(job);
-});
-
-// Partially update a job
-app.patch("/api/jobs/:id", (req, res) => {
-    const id = Number(req.params.id);
-
-    const job = jobs.find((job) => job.id === id);
-
-    if (!job) {
-        return res.status(404).json({ message: "Job not found" });
-    }
-
-    if (req.body.status && !allowedStatuses.includes(req.body.status)) {
+    if (!allowedStatuses.includes(status)) {
         return res.status(400).json({
             message: "Invalid job status"
         });
     }
 
-    Object.assign(job, req.body);
+    try {
+        const result = await pool.query(
+            `INSERT INTO jobs (company, role, status)
+             VALUES ($1, $2, $3)
+             RETURNING *`,
+            [company, role, status]
+        );
 
-    res.json(job);
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            error: "Database error"
+        });
+    }
 });
 
-app.delete("/api/jobs/:id", (req, res) => {
+// Get all jobs
+app.get("/api/jobs", async (req, res) => {
+    try {
+        const result = await pool.query("SELECT * FROM jobs");
+        res.json(result.rows);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: "Database error" });
+    }
+});
+
+// Get a single job by ID
+app.get("/api/jobs/:id", async (req, res) => {
     const id = Number(req.params.id);
 
-    const job = jobs.find((job) => job.id === id);
+    try {
+        const result = await pool.query(
+            "SELECT * FROM jobs WHERE id = $1",
+            [id]
+        );
 
-    if (!job) {
-        return res.status(404).send("Job not found");
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                message: "Job not found"
+            });
+        }
+
+        res.json(result.rows[0]);
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            error: "Database error"
+        });
+    }
+});
+
+app.put("/api/jobs/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    const { status } = req.body;
+
+    if (!status) {
+        return res.status(400).json({
+            message: "Status is required"
+        });
     }
 
-    jobs = jobs.filter((job) => job.id !== id);
+    if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({
+            message: "Invalid job status"
+        });
+    }
 
-    res.send("Job deleted successfully");
+    try {
+        const result = await pool.query(
+            `UPDATE jobs
+             SET status = $1
+             WHERE id = $2
+             RETURNING *`,
+            [status, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                message: "Job not found"
+            });
+        }
+
+        res.json(result.rows[0]);
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            error: "Database error"
+        });
+    }
+});
+// Partially update a job
+app.patch("/api/jobs/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    const { company, role, status } = req.body;
+
+    if (status && !allowedStatuses.includes(status)) {
+        return res.status(400).json({
+            message: "Invalid job status"
+        });
+    }
+
+    try {
+        const result = await pool.query(
+            `UPDATE jobs
+             SET
+                company = COALESCE($1, company),
+                role = COALESCE($2, role),
+                status = COALESCE($3, status)
+             WHERE id = $4
+             RETURNING *`,
+            [company, role, status, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                message: "Job not found"
+            });
+        }
+
+        res.json(result.rows[0]);
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            error: "Database error"
+        });
+    }
+});
+
+app.delete("/api/jobs/:id", async (req, res) => {
+    const id = Number(req.params.id);
+
+    try {
+        const result = await pool.query(
+            "DELETE FROM jobs WHERE id = $1 RETURNING *",
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                message: "Job not found"
+            });
+        }
+
+        res.json({
+            message: "Job deleted successfully",
+            job: result.rows[0]
+        });
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({
+            error: "Database error"
+        });
+    }
 });
 
 
